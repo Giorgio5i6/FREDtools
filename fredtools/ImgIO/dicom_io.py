@@ -1,4 +1,4 @@
-from fredtools._typing import *
+# from fredtools._typing import *
 from fredtools import getLogger
 _logger = getLogger(__name__)
 
@@ -617,13 +617,13 @@ def getRNEthosMLC(fileName: PathLike, displayInfo: bool = False) -> DataFrame:
     import numpy as np
 
     # check if dicom is RN
-    _isDicomRN(fileName, raiseError=True)
+    # _isDicomRN(fileName, raiseError=True)
 
     # check if dicom is "RT Ion Plan Storage"
-    if not "RT Ion Plan Storage" == getDicomTypeName(fileName):
-        error = TypeError(f"The dicom is not of 'RT Ion Plan Storage' type but SOP class UID name is '{getDicomTypeName(fileName)}'")
-        _logger.error(error)
-        raise error
+    # if not "RT Ion Plan Storage" == getDicomTypeName(fileName):
+    #     error = TypeError(f"The dicom is not of 'RT Ion Plan Storage' type but SOP class UID name is '{getDicomTypeName(fileName)}'")
+    #     _logger.error(error)
+    #     raise error
 
     # read dicom
     dicomTags = dicom.dcmread(fileName)
@@ -642,72 +642,53 @@ def getRNEthosMLC(fileName: PathLike, displayInfo: bool = False) -> DataFrame:
         # get the field isocentre
         isocenterPos = np.array(BeamDataset.ControlPointSequence[0].IsocenterPosition).tolist()
         nominalBeamEnergy = BeamDataset.ControlPointSequence[0].NominalBeamEnergy.real if "NominalBeamEnergy" in BeamDataset.ControlPointSequence[0] else np.nan
-        gantryRotationDirection = BeamDataset.ControlPointSequence[0].GantryRotationDirection if "GantryRotationDirection" in BeamDataset.ControlPointSequence[0] else np.nan
         doseRate = BeamDataset.ControlPointSequence[0].DoseRateSet.real if "DoseRateSet" in BeamDataset.ControlPointSequence[0] else np.nan
-        limitingDeviceAngle = BeamDataset.ControlPointSequence[0].LimitingDeviceAngle.real if "BeamLimitingDeviceAngle" in BeamDataset.ControlPointSequence[0] else np.nan
-
-        # get the field magnets' distances
-        if "VirtualSourceAxisDistances" in BeamDataset:
-            fieldMagDist = BeamDataset.VirtualSourceAxisDistances
-        else:
-            fieldMagDist = np.nan
-
+        limitingDeviceAngle = BeamDataset.ControlPointSequence[0].BeamLimitingDeviceAngle.real if "BeamLimitingDeviceAngle" in BeamDataset.ControlPointSequence[0] else np.nan
+        JawPositionsX = np.array(BeamDataset.ControlPointSequence[0].BeamLimitingDevicePositionSequence[0].LeafJawPositions).tolist()
+        JawPositionsY = np.array(BeamDataset.ControlPointSequence[0].BeamLimitingDevicePositionSequence[1].LeafJawPositions).tolist()
         # get ReferencedBeamDataset
-        ReferencedBeamDataset = _getReferencedBeamDatasetForFieldNumber(fileName, fieldNo)
-        if not ReferencedBeamDataset:
-            _logger.debug("Could not find ReferencedBeamDataset for field number {:d}.".format(fieldNo))
-            continue
+        # ReferencedBeamDataset = _getReferencedBeamDatasetForFieldNumber(fileName, fieldNo)
+        # if not ReferencedBeamDataset:
+        #     _logger.debug("Could not find ReferencedBeamDataset for field number {:d}.".format(fieldNo))
+        #     continue
 
         # get and field cumulative Meterset Weight
-        fieldCumMsW = BeamDataset.FinalCumulativeMetersetWeight
+        FinalCumulativeMetersetWeight = BeamDataset.FinalCumulativeMetersetWeight
 
         # get spots parameters from ControlPointSequence
         arcsInfo = []
-
-
-        
-        for sliceIdx, IonControlPointDataset in enumerate(BeamDataset.ControlPointSequence):
-            # number of spots for slice
-            spotsNo = 1
-
+        cumulativeMetersWeight_Prev = 0
+        for _, IonControlPointDataset in enumerate(BeamDataset.ControlPointSequence):
             arcInfo = {}
             arcInfo["FDeliveryNo"] = fieldDeliveryNo
             arcInfo["FNo"] = fieldNo
             arcInfo["FName"] = fieldName
+            arcInfo["FNominalBeamEnergy"] = nominalBeamEnergy
+            arcInfo["FNofCP"] = IonControlPointDataset.NumberOfControlPoints.real if "NumberOfControlPoints" in IonControlPointDataset else np.nan
             arcInfo["FDoseRate"] = doseRate
             arcInfo["FLimitingDeviceAngle"] = limitingDeviceAngle
-            arcInfo["FGantryRotationDirection"] = gantryRotationDirection
-            arcInfo["FGantryAngle"] = IonControlPointDataset.GantryAngle.real if "GantryAngle" in IonControlPointDataset else np.nan
             arcInfo["FCouchAngle"] = IonControlPointDataset.PatientSupportAngle.real if "PatientSupportAngle" in IonControlPointDataset else np.nan
             arcInfo["FCouchPitchAngle"] = IonControlPointDataset.TableTopPitchAngle.real if "TableTopPitchAngle" in IonControlPointDataset else np.nan
             arcInfo["FCouchRollAngle"] = IonControlPointDataset.TableTopRollAngle.real if "TableTopRollAngle" in IonControlPointDataset else np.nan
             arcInfo["FIsoPos"] = isocenterPos
+            arcInfo["FFinalCumulativeMetersWeight"] = FinalCumulativeMetersetWeight
+            arcInfo["FJawPositionsX"] = JawPositionsX
+            arcInfo["FJawPositionsY"] = JawPositionsY
 
-            # get RS Settings for MEVION
-            if "RangeShifterSettingsSequence" in IonControlPointDataset:
-                arcInfo["PBRSSetting"] = (
-                    [IonControlPointDataset.RangeShifterSettingsSequence[0].RangeShifterSetting] * spotsNo
-                    if "RangeShifterSetting" in IonControlPointDataset.RangeShifterSettingsSequence[0]
-                    else np.nan
-                )
-            else:
-                arcInfo["PBRSSetting"] = np.nan
-
-            arcInfo["PBSnoutPos"] = [IonControlPointDataset.SnoutPosition.real] * spotsNo if "SnoutPosition" in IonControlPointDataset else np.nan
-            arcInfo["PBnomEnergy"] = [IonControlPointDataset.NominalBeamEnergy.real] * spotsNo if "NominalBeamEnergy" in IonControlPointDataset else np.nan
-            arcInfo["PBMsW"] = IonControlPointDataset.ScanSpotMetersetWeights
-            arcInfo["PBMU"] = np.array(IonControlPointDataset.ScanSpotMetersetWeights) / fieldCumMsW * fieldDose
-            arcInfo["PBPosX"] = IonControlPointDataset.ScanSpotPositionMap[0::2]
-            arcInfo["PBPosY"] = IonControlPointDataset.ScanSpotPositionMap[1::2]
-            arcInfo["PBTuneID"] = [IonControlPointDataset.ScanSpotTuneID] * spotsNo
-            arcInfo["PBPainting"] = [IonControlPointDataset.NumberOfPaintings] * spotsNo
-            arcInfo = pd.DataFrame(arcInfo)
+            arcInfo["CPIndex"] = IonControlPointDataset.ControlPointIndex.real if "ControlPointIndex" in IonControlPointDataset else np.nan
+            arcInfo["CPGantryAngle"] = IonControlPointDataset.GantryAngle.real if "GantryAngle" in IonControlPointDataset else np.nan
+            arcInfo["CPGantryRotationDirection"] = IonControlPointDataset.GantryRotationDirection if "GantryRotationDirection" in IonControlPointDataset else np.nan
+            arcInfo["CPCumulativeMetersetWeight"] = IonControlPointDataset.CumulativeMetersetWeight.real if "CumulativeMetersetWeight" in IonControlPointDataset else np.nan
+            arcInfo["CPMetersetWeight"] = arcInfo["CPCumulativeMetersetWeight"] - cumulativeMetersWeight_Prev
+            arcInfo["CPProximalMLCPosition1"] = np.array(IonControlPointDataset.BeamLimitingDevicePositionSequence[-2].LeafJawPositions[0:28]).tolist()
+            arcInfo["CPProximalMLCPosition2"] = np.array(IonControlPointDataset.BeamLimitingDevicePositionSequence[-2].LeafJawPositions[28:]).tolist()
+            arcInfo["CPDistalMLCPosition1"] = np.array(IonControlPointDataset.BeamLimitingDevicePositionSequence[-1].LeafJawPositions[0:29]).tolist()
+            arcInfo["CPDistalMLCPosition2"] = np.array(IonControlPointDataset.BeamLimitingDevicePositionSequence[-1].LeafJawPositions[29:]).tolist()
+            cumulativeMetersWeight_Prev = arcInfo["CPCumulativeMetersetWeight"]
             arcsInfo.append(arcInfo)
-        arcsInfo = pd.concat(arcsInfo)
-        arcsInfo["FSpotNo"] = range(1, arcsInfo.shape[0] + 1)
+        arcsInfo = pd.DataFrame(arcsInfo)
         controlPointInfo.append(arcsInfo)
     controlPointInfo = pd.concat(controlPointInfo)
-
     # drop columns with all NaN values
     controlPointInfo.dropna(axis="columns", how="all", inplace=True)
 
@@ -717,12 +698,12 @@ def getRNEthosMLC(fileName: PathLike, displayInfo: bool = False) -> DataFrame:
     # reset index
     controlPointInfo.reset_index(drop=True, inplace=True)
 
-    if displayInfo:
-        strLog = [f"Fields No:  {controlPointInfo.FNo.nunique()}",
-                  f"Rows No:    {len(controlPointInfo)}",
-                  f"Spots No:   {len(controlPointInfo.loc[controlPointInfo.PBMU != 0])}",
-                  f"Total MU:   {controlPointInfo.PBMU.sum():.2f}"]
-        _logger.info("Spots statistics:\n" + "\n\t".join(strLog))
+    # if displayInfo:
+    #     strLog = [f"Fields No:  {controlPointInfo.FNo.nunique()}",
+    #               f"Rows No:    {len(controlPointInfo)}",
+    #               f"Spots No:   {len(controlPointInfo.loc[controlPointInfo.PBMU != 0])}",
+    #               f"Total MU:   {controlPointInfo.PBMU.sum():.2f}"]
+    #     _logger.info("Spots statistics:\n" + "\n\t".join(strLog))
 
     return controlPointInfo
 
