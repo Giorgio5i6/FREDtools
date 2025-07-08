@@ -1,4 +1,4 @@
-# from fredtools._typing import *
+from fredtools._typing import *
 from fredtools import getLogger
 _logger = getLogger(__name__)
 
