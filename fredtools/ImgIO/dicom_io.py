@@ -589,6 +589,144 @@ def getRNSpots(fileName: PathLike, displayInfo: bool = False) -> DataFrame:
     return spotsInfo
 
 
+def getRNEthosMLC(fileName: PathLike, displayInfo: bool = False) -> DataFrame:
+    """Get the parameters of each spot defined in the RN file.
+
+    The function retrieves information for each spot defined in the RN dicom file.
+    All spots are listed in the results, including the spots with zero meterset weights.
+
+    Parameters
+    ----------
+    fileName : path
+        Path to RN dicom file.
+    displayInfo : bool, optional
+        Displays a summary of the function results. (def. False)
+
+    Returns
+    -------
+    pandas DataFrame
+        DataFrame with the spots' parameters.
+
+    See Also
+    --------
+    getRNFields : get a summary of parameters for each field defined in the RN plan.
+    getRNInfo : get some basic information from the RN plan.
+    """
+    import pandas as pd
+    import pydicom as dicom
+    import numpy as np
+
+    # check if dicom is RN
+    _isDicomRN(fileName, raiseError=True)
+
+    # check if dicom is "RT Ion Plan Storage"
+    if not "RT Ion Plan Storage" == getDicomTypeName(fileName):
+        error = TypeError(f"The dicom is not of 'RT Ion Plan Storage' type but SOP class UID name is '{getDicomTypeName(fileName)}'")
+        _logger.error(error)
+        raise error
+
+    # read dicom
+    dicomTags = dicom.dcmread(fileName)
+
+    # get RN spots parameters in order of delivery
+    controlPointInfo = []
+    for fieldDeliveryNo, BeamDataset in enumerate(dicomTags.BeamSequence, start=1):
+        # continue if couldn't find BeamDataset or the Treatment Delivery Type of the BeamDataset is not TREATMENT
+        if not BeamDataset or not (BeamDataset.TreatmentDeliveryType == "TREATMENT"):
+            continue
+
+        # get information for the field
+        fieldNo = int(BeamDataset.BeamNumber)
+        fieldName = BeamDataset.BeamName
+
+        # get the field isocentre
+        isocenterPos = np.array(BeamDataset.ControlPointSequence[0].IsocenterPosition).tolist()
+        nominalBeamEnergy = BeamDataset.ControlPointSequence[0].NominalBeamEnergy.real if "NominalBeamEnergy" in BeamDataset.ControlPointSequence[0] else np.nan
+        gantryRotationDirection = BeamDataset.ControlPointSequence[0].GantryRotationDirection if "GantryRotationDirection" in BeamDataset.ControlPointSequence[0] else np.nan
+        doseRate = BeamDataset.ControlPointSequence[0].DoseRateSet.real if "DoseRateSet" in BeamDataset.ControlPointSequence[0] else np.nan
+        limitingDeviceAngle = BeamDataset.ControlPointSequence[0].LimitingDeviceAngle.real if "BeamLimitingDeviceAngle" in BeamDataset.ControlPointSequence[0] else np.nan
+
+        # get the field magnets' distances
+        if "VirtualSourceAxisDistances" in BeamDataset:
+            fieldMagDist = BeamDataset.VirtualSourceAxisDistances
+        else:
+            fieldMagDist = np.nan
+
+        # get ReferencedBeamDataset
+        ReferencedBeamDataset = _getReferencedBeamDatasetForFieldNumber(fileName, fieldNo)
+        if not ReferencedBeamDataset:
+            _logger.debug("Could not find ReferencedBeamDataset for field number {:d}.".format(fieldNo))
+            continue
+
+        # get and field cumulative Meterset Weight
+        fieldCumMsW = BeamDataset.FinalCumulativeMetersetWeight
+
+        # get spots parameters from ControlPointSequence
+        arcsInfo = []
+
+
+        
+        for sliceIdx, IonControlPointDataset in enumerate(BeamDataset.ControlPointSequence):
+            # number of spots for slice
+            spotsNo = 1
+
+            arcInfo = {}
+            arcInfo["FDeliveryNo"] = fieldDeliveryNo
+            arcInfo["FNo"] = fieldNo
+            arcInfo["FName"] = fieldName
+            arcInfo["FDoseRate"] = doseRate
+            arcInfo["FLimitingDeviceAngle"] = limitingDeviceAngle
+            arcInfo["FGantryRotationDirection"] = gantryRotationDirection
+            arcInfo["FGantryAngle"] = IonControlPointDataset.GantryAngle.real if "GantryAngle" in IonControlPointDataset else np.nan
+            arcInfo["FCouchAngle"] = IonControlPointDataset.PatientSupportAngle.real if "PatientSupportAngle" in IonControlPointDataset else np.nan
+            arcInfo["FCouchPitchAngle"] = IonControlPointDataset.TableTopPitchAngle.real if "TableTopPitchAngle" in IonControlPointDataset else np.nan
+            arcInfo["FCouchRollAngle"] = IonControlPointDataset.TableTopRollAngle.real if "TableTopRollAngle" in IonControlPointDataset else np.nan
+            arcInfo["FIsoPos"] = isocenterPos
+
+            # get RS Settings for MEVION
+            if "RangeShifterSettingsSequence" in IonControlPointDataset:
+                arcInfo["PBRSSetting"] = (
+                    [IonControlPointDataset.RangeShifterSettingsSequence[0].RangeShifterSetting] * spotsNo
+                    if "RangeShifterSetting" in IonControlPointDataset.RangeShifterSettingsSequence[0]
+                    else np.nan
+                )
+            else:
+                arcInfo["PBRSSetting"] = np.nan
+
+            arcInfo["PBSnoutPos"] = [IonControlPointDataset.SnoutPosition.real] * spotsNo if "SnoutPosition" in IonControlPointDataset else np.nan
+            arcInfo["PBnomEnergy"] = [IonControlPointDataset.NominalBeamEnergy.real] * spotsNo if "NominalBeamEnergy" in IonControlPointDataset else np.nan
+            arcInfo["PBMsW"] = IonControlPointDataset.ScanSpotMetersetWeights
+            arcInfo["PBMU"] = np.array(IonControlPointDataset.ScanSpotMetersetWeights) / fieldCumMsW * fieldDose
+            arcInfo["PBPosX"] = IonControlPointDataset.ScanSpotPositionMap[0::2]
+            arcInfo["PBPosY"] = IonControlPointDataset.ScanSpotPositionMap[1::2]
+            arcInfo["PBTuneID"] = [IonControlPointDataset.ScanSpotTuneID] * spotsNo
+            arcInfo["PBPainting"] = [IonControlPointDataset.NumberOfPaintings] * spotsNo
+            arcInfo = pd.DataFrame(arcInfo)
+            arcsInfo.append(arcInfo)
+        arcsInfo = pd.concat(arcsInfo)
+        arcsInfo["FSpotNo"] = range(1, arcsInfo.shape[0] + 1)
+        controlPointInfo.append(arcsInfo)
+    controlPointInfo = pd.concat(controlPointInfo)
+
+    # drop columns with all NaN values
+    controlPointInfo.dropna(axis="columns", how="all", inplace=True)
+
+    # fill nan values with the lat valid value
+    controlPointInfo.ffill(inplace=True)
+
+    # reset index
+    controlPointInfo.reset_index(drop=True, inplace=True)
+
+    if displayInfo:
+        strLog = [f"Fields No:  {controlPointInfo.FNo.nunique()}",
+                  f"Rows No:    {len(controlPointInfo)}",
+                  f"Spots No:   {len(controlPointInfo.loc[controlPointInfo.PBMU != 0])}",
+                  f"Total MU:   {controlPointInfo.PBMU.sum():.2f}"]
+        _logger.info("Spots statistics:\n" + "\n\t".join(strLog))
+
+    return controlPointInfo
+
+
 def getRNFields(fileName: PathLike, raiseWarning=True, displayInfo: bool = False) -> DataFrame:
     """Get the parameters of each field defined in the RN file.
 
